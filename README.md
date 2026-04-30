@@ -77,7 +77,7 @@ Akin to the TDT approach at its core, it fits a linear relationship between temp
 
 ## Example
 
-Rmarkdown and html render demonstrates the workflow through applying the functions in a pipeline to example data.
+- Rmarkdown and html render demonstrates the workflow through applying the functions in a pipeline to example data.
 ---
 
 ## Related Resources
