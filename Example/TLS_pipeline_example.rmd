@@ -1,0 +1,475 @@
+---
+title: "Example Fv/Fm TLS pipeline"
+author: "Pieter Arnold"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+This is an example pipeline to process Fv/Fm data for quantifying thermal tolerance of photosystem II (PSII) using the Thermal Load Sensitivity (TLS) approach, which integrates both temperature intensity and exposure duration to derive time-based critical temperature thresholds.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warnings = FALSE)
+knitr::opts_knit$set(root.dir = "/Users/u1058369/Library/CloudStorage/Dropbox/Pieter/ANU/ATLS project/2023 Heat load experiment/Heat Load Methods Paper")
+
+```
+
+## Libraries
+
+Load in R packages and functions required for the models to run.
+
+```{r}
+
+pacman::p_load(ggplot2, ggpubr, patchwork, scales, tidyr, dplyr, lmerTest, plotrix, readr, qs2, foreach, doParallel, pbapply)
+
+source("Code/TLS_functions.R")
+
+```
+
+
+## Load data
+
+Import the data to be extracted. Calculate the proportional Fv/Fm based on the time periods of measurements.
+Typically, this is initial, 2h post-heat, and 16-24h post-heat. 
+Rename columns to a consistent naming convention for the pipeline to run as intended.
+At minimum you'll need: `Temp`, `Time`, `final_fvfm`, `initial_fvfm` and a way to identify species and "unique" plant samples through `Species_sample`.
+This example contains data from TLS assays of leaves from 5 individual plants (unique samples) of broad beans (*Vicia faba*) that were exposed the thermal load treatments under moderate light intensity.
+
+```{r}
+
+# Add filepath
+dat <- read.csv("Example/Example_TLS_data.csv")
+
+str(dat)
+# initial = before heat
+# post = 2h after heat
+# overnight = 16-24h after heat
+
+# Calculate Fv/Fm as proportion (initial - post)
+dat$fvfm_prop_ip <- dat$post/dat$initial
+dat$fvfm_prop_ip <- ifelse(dat$post/dat$initial=="NaN", 0, dat$post/dat$initial) 
+dat$fvfm_prop_ip <- ifelse(dat$fvfm_prop_ip > 1, 1, dat$fvfm_prop_ip) 
+
+# Calculate Fv/Fm as proportion (initial - final)
+dat$fvfm_prop_io <- dat$o/dat$initial
+dat$fvfm_prop_io <- ifelse(dat$overnight/dat$initial=="NaN", 0, dat$overnight/dat$initial) 
+dat$fvfm_prop_io <- ifelse(dat$fvfm_prop_io > 1, 1, dat$fvfm_prop_io) 
+
+dat <- dat %>% rename(final_fvfm = overnight)
+dat <- dat %>% rename(post_fvfm = post)
+dat <- dat %>% rename(initial_fvfm = initial)
+dat$unique_sample <- as.integer(as.factor(dat$plant_id))
+dat$Species_sample <- paste0(dat$Species, "_", dat$unique_sample)
+
+str(dat)
+
+```
+
+## Clean data
+
+Double check the number of samples, ensuring that most of them have representation across the treatments. Exclude samples that showed damage under benign conditions (clearly unhealthy or physically damaged, unrelated to the heat treatment). Option to manually remove samples that are known to be poor quality.
+
+
+```{r}
+
+# Number of unique samples 
+nsamp <- length(unique(dat$unique_sample))
+print(nsamp)
+
+# Check the data depth: length_sample would ideally be > 20
+length_sample <- matrix(NA, nsamp, 1)
+for (i in 1:nsamp) {
+  length_sample[i] <- length(which(dat$unique_sample==i))
+}
+# Check which sample(s) has poor replication
+which(length_sample < 20) 
+
+
+# Optional potential cleaning steps:
+
+# Remove initial Fv/Fm proportions in benign treatments that are exactly 0
+# dat_clean <- dat[-which(dat$fvfm_prop_io==0 & dat$Time=="30"),]
+
+# Remove 5 min treatment if very large variance in derived parameters
+# dat_clean <- dat_clean[-which(dat_clean$Time=="5"),]
+
+# Manually remove spurious samples
+# dat_clean <- dat_clean[-which(dat$unique_sample %in% c("1")),]
+
+# If none of the above are needed, define `dat_clean` as `dat`
+dat_clean <- dat
+dim(dat_clean)
+head(dat_clean)
+
+
+# Create directory for outputs if it doesn't exist
+if(!dir.exists("Example")) {
+  dir.create("Example")
+}
+
+# Save cleaned data
+write.csv(dat_clean, "Example/Example_TLS_dat_clean.csv")
+
+```
+
+## Data summary
+
+Summarise and plot the raw Fv/Fm data of the cleaned dataset overall. This should give insight into ubiquitously problematic treatments from the heat assays.
+
+```{r}
+
+
+fvfm_summary <- dat_clean %>%
+  group_by(Temp, Time) %>%
+  summarise(
+    meanFvFm = mean(fvfm_prop_io, na.rm = TRUE),
+    sd = sd(fvfm_prop_io, na.rm = TRUE),
+    se = std.error(fvfm_prop_io, na.rm = TRUE))
+fvfm_summary$Temp <- as.factor(fvfm_summary$Temp)
+fvfm_summary
+
+
+ggplot(data = fvfm_summary, aes(x = log10(Time), y = meanFvFm, colour = Temp)) +
+  geom_point(position = position_jitter(0.00), alpha = 0.5) +
+  geom_smooth(method = "lm", formula = y ~ x, se = FALSE, fullrange = TRUE) +
+  scale_x_continuous(breaks = c(log10(1), log10(5), log10(15), 
+                                log10(30), log10(60), log10(120), log10(240)),
+                     labels = c("1", "5", "15", "30", "60", "120", "240")) +
+  scale_y_continuous(limits = c(-0.03,1)) +
+  labs(y = bquote(Proportional~italic(F)[V]/italic(F)[M]), x = bquote(Time~(min)), colour = "Temperature") +
+  scale_colour_viridis_d(option = "inferno", end = 0.85) +
+  theme_classic()
+
+fvfm_summary <- dat_clean %>%
+  group_by(Temp, Time) %>%
+  summarise(
+    meanFvFm = mean(final_fvfm, na.rm = TRUE),
+    sd = sd(final_fvfm, na.rm = TRUE),
+    se = std.error(final_fvfm, na.rm = TRUE))
+fvfm_summary$Temp <- as.factor(fvfm_summary$Temp)
+fvfm_summary
+
+ggplot(data = fvfm_summary, aes(x = log10(Time), y = meanFvFm, colour = Temp)) +
+  geom_point(position = position_jitter(0.00), alpha = 0.5) +
+  geom_smooth(method = "lm", formula = y ~ x, se = FALSE, fullrange = TRUE) +
+  scale_x_continuous(breaks = c(log10(1), log10(5), log10(15), 
+                                log10(30), log10(60), log10(120), log10(240)),
+                     labels = c("1", "5", "15", "30", "60", "120", "240")) +
+  scale_y_continuous(limits = c(-0.03,0.8)) +
+  labs(y = bquote(italic(F)[V]/italic(F)[M]), x = bquote(Time~(min)), colour = "Temperature") +
+  scale_colour_viridis_d(option = "inferno", end = 0.85) +
+  theme_classic()
+
+
+```
+
+## User config
+
+User defined parameters for fitting the TLS model
+`rep` = number of bootstrap iterations, will increase model fitting time proportionally
+`response_vars` = a list of response variables to be calculated. fvfm_io is initial to overnight and is the minimum used. Customisable if additional measurement time points are included.
+`thresholds` = a list of thresholds to include in the analysis. T50 is typical (50% decline in Fv/Fm), but also the a point of damage initiation (e.g. T5, T10, T15, 'Tcrit') and a point of substantial damage (e.g. T90, T95). Both the threshold name and value from 0 to 1 need to be defined and matched.
+
+`response_vars_absolute` = a list of response variables to be calculated. fvfm_absolute is the final Fv/Fm value (absolute raw data). Customisable for different thresholds if additional measurement time points are included.
+`thresholds` = a list of thresholds for absolute values to include in the analysis. T0.3 is typical (temperature when Fv/Fm = 0.3), but others can be added between the bounds of 0 and ~0.8.
+
+```{r}
+
+# User-defined parameters
+# Configuration
+config <- list(
+  rep = 1000, # Bootstrap replications,  # CHANGE AS REQUIRED
+  uniquesamples = length(unique(dat$unique_sample)),
+  time_levels = c(5,15,30,60,120),  # CHANGE AS REQUIRED
+  resample = TRUE, # Option for bootstrap or original data (recommend using bootstrapping)
+  
+  # Define which response variables to analyse  # CHANGE AS REQUIRED
+  response_vars <- list(
+    fvfm_io = list(
+      name = "fvfm_prop_io",
+      description = "Initial to 24h recovery", 
+      thresholds = list(
+        T90 = 0.1, # 90% decline
+        T50 = 0.5, # 50% decline
+        T10 = 0.9 # 10% decline, may not always work if there aren't a few control treatments (low temp, short time)
+      )
+    )
+    ,
+    fvfm_if = list(
+      name = "fvfm_prop_ip",
+      description = "Initial to 2h post-heat",
+      thresholds = list(
+        T90 = 0.1, # 90% decline
+        T50 = 0.5, # 50% decline
+        T10 = 0.9 # 10% decline
+      )
+    )
+  ), 
+  
+  response_vars_absolute <- list(
+    fvfm_absolute = list(
+      name = "final_fvfm",  # Use the raw Fv/Fm column instead of proportional
+      description = "Absolute Fv/Fm values",
+      thresholds = list(
+        T0.3 = 0.3    # Temperature where Fv/Fm = 0.3
+      )
+    )
+  )
+)
+
+config$response_vars <- c(response_vars, response_vars_absolute)
+
+
+```
+
+## Extract data
+
+This applies many of the functions to extract the threshold temperature values under each treatment and then calculate TLS metrics from those fits. Also generates plots for diagnostics. Stores results in `all_results` as a list that is compiled in the next steps. Progress is indicated.
+
+```{r, warning=FALSE, fig.width=8, fig.height=12}
+
+# Initialise output lists
+all_results <- list()
+all_diagnostic_plots <- list()
+
+
+for(k in 1:config$uniquesamples) {
+  tryCatch({
+    cat(sprintf("\rProcessing sample %d/%d", k, config$uniquesamples))
+    cat("\n")  
+    
+    # Prepare data
+    sp <- dat_clean %>%
+      filter(unique_sample == k) %>%
+      mutate(logTime = log10(Time))
+    
+    if(nrow(sp) < 10) {
+      cat(sprintf(" - Skipped (insufficient data)\n"))
+      next
+    }
+    
+    # Generate prediction grid
+    pred_grid <- generate_pred_grid(sp)
+    
+    if(isTRUE(config$resample)) {
+      # Bootstrap predictions for all response variables
+      cat("Running with resampling (bootstrap)\n")
+      predictions <- bootstrap_predictions(sp, pred_grid, config$response_vars, config$rep, 
+                                           resample = TRUE, progress = TRUE, n_cores = parallel::detectCores())
+    } else {
+      cat("Running without resampling (original)\n")
+      predictions <- bootstrap_predictions(sp, pred_grid, config$response_vars, config$rep, 
+                                           resample = FALSE, progress = FALSE)
+    }
+    
+    # Calculate temperature thresholds for all responses
+    threshold_results <- calculate_all_thresholds(
+      predictions, pred_grid, config$response_vars, config$rep
+    )
+    
+    # Calculate TLS metrics for all responses
+    tls_metrics <- list()
+    for(resp_var in names(config$response_vars)) {
+      tls_metrics[[resp_var]] <- calculate_tls_metrics(threshold_results[[resp_var]], verbose = TRUE, 
+                                                       min_r_squared = 0.1, 
+                                                       temp_range = c(15,80),
+                                                       z_range = c(-30,5),
+                                                       min_temp_span = 0.1)
+      
+      # Add metadata
+      for(thresh_name in names(tls_metrics[[resp_var]])) {
+        if(!is.null(tls_metrics[[resp_var]][[thresh_name]])) {
+          tls_metrics[[resp_var]][[thresh_name]]$unique_sample <- k
+          tls_metrics[[resp_var]][[thresh_name]]$response_type <- resp_var
+        }
+      }
+    }
+    
+    # Generate diagnostic plots
+    plots <- generate_diagnostic_plots(
+      sp, predictions, pred_grid, 
+      threshold_results, tls_metrics, 
+      k, config$response_vars
+    )
+    
+    # Save plots for each response type
+    plot_combined_list <- list()
+    
+    for(resp_var in names(plots)) {
+      resp_name <- gsub("fvfm_", "", resp_var)  # Clean name for filename
+      
+      # Combine plots for this response
+      plot_combined_list[[resp_var]] <- ggarrange(
+        plotlist = plots[[resp_var]], 
+        nrow = 3, ncol = 2, 
+        align = "h", labels = "AUTO"
+      )
+      
+      # Save plots
+      for(resp_var in names(plot_combined_list)) {
+        resp_name <- gsub("fvfm_", "", resp_var)
+        plot_name <- sprintf("sample_%03d_%s", k, resp_name)
+        all_diagnostic_plots[[plot_name]] <- plot_combined_list[[resp_var]]
+      }
+    }
+    
+    # comparison_plot <- generate_comparison_plots(
+    #   sp, predictions, pred_grid,
+    #   threshold_results, tls_metrics,
+    #   k, config$response_vars
+    # )
+    
+    # ggsave(
+    #   filename = sprintf("diagnostic_plots/sample_%03d_comparison.pdf", k),
+    #   plot = comparison_plot,
+    #   width = 8, height = 12
+    # )
+    
+    # Store results
+    all_results[[k]] <- list(
+      thresholds = threshold_results,
+      tls_metrics = tls_metrics,
+      predictions = predictions
+    )
+    
+    # all_plots[[k]] <- list(
+    #   plots_individual = plot_combined_list,
+    #   comparison_plot = comparison_plot
+    # )
+    
+  }, error = function(e) {
+    cat(sprintf("\nERROR in sample %d: %s\n", k, conditionMessage(e)))
+  })
+}
+
+# pdf("Example/Example_all_samples_diagnostics.pdf", width = 8, height = 12)
+for(plot in all_diagnostic_plots) {
+  print(plot)
+}
+# dev.off()
+rm(plots)
+
+```
+
+## Save results
+
+```{r}
+
+qs_save(all_results, "Example/results_data.qs2", nthreads = parallel::detectCores())  # Small file
+qs_save(all_diagnostic_plots, "Example/results_plots.qs2", nthreads = parallel::detectCores())   # Large file
+
+```
+
+
+```{r, eval=FALSE}
+
+# Load output list with plots as a .rds file (may read a large file if rep is large)
+# all_results <- qs_read("Example/results_data.qs2")
+# all_diagnostic_plots <- qs_read("Example/results_plots.qs2")
+
+```
+
+## Summarize results
+
+```{r}
+
+# Extract all results for each response type
+results_summary <- list()
+
+for(resp_var in names(config$response_vars)) {
+  results_summary[[resp_var]] <- list()
+  
+  # Get thresholds
+  for(thresh in names(config$response_vars[[resp_var]]$thresholds)) {
+    results_summary[[resp_var]]$thresholds[[thresh]] <- 
+      compile_results_by_response(all_results, resp_var, thresh)
+    
+    results_summary[[resp_var]]$tls[[thresh]] <- 
+      compile_tls_by_response(all_results, resp_var, thresh)
+  }
+}
+
+# Access results for specific response type
+t50_if <- results_summary$fvfm_if$thresholds$T50
+t50_io <- results_summary$fvfm_io$thresholds$T50
+
+results_summary$fvfm_io$thresholds$T90
+
+t50_if_tls <- results_summary$fvfm_if$tls$T50
+t50_io_tls <- results_summary$fvfm_io$tls$T50
+
+print(t50_io_tls)
+
+```
+
+## Save results
+
+```{r}
+
+for(resp in names(results_summary)) {
+  for(thresh in names(results_summary[[resp]]$thresholds)) {
+    # Thresholds
+    write.csv(
+      results_summary[[resp]]$thresholds[[thresh]], 
+      sprintf("Example/results_%s_thr_%s.csv", resp, tolower(thresh)),
+      row.names = FALSE
+    )
+    
+    # TLS metrics
+    write.csv(
+      results_summary[[resp]]$tls[[thresh]], 
+      sprintf("Example/results_%s_tls_%s.csv", resp, tolower(thresh)),
+      row.names = FALSE
+    )
+  }
+}
+```
+
+## Compile final results
+
+```{r}
+
+# Flatten TLS metrics
+df_tls <- flatten_results_summary(results_summary)
+
+# View the flattened data
+print(df_tls)
+
+# Get summary statistics
+summary_stats <- summarize_results(df_tls)
+print(summary_stats)
+
+# Compare valid vs invalid fits
+validity <- compare_valid_invalid(df_tls)
+print(validity)
+
+# Flatten threshold data (T[n] across time)
+df_thresholds <- flatten_threshold_data(results_summary)
+head(df_thresholds)
+# 
+# # Filter for specific response and threshold
+# df_tls %>%
+#   filter(response_type == "fvfm_io", threshold == "T50", valid_fit == TRUE)
+# 
+# # Export to CSV
+write_csv(df_tls, "Example/tls_metrics_flattened.csv")
+write_csv(df_thresholds, "Example/threshold_data_flattened.csv")
+
+```
+
+## View results
+use [[n]] after all_results to show the individual sample of interest, then $ for the items in the list. Plots are in all_diagnostic_plots
+
+```{r, fig.height=10, fig.width=7}
+
+results_summary$fvfm_io$tls$T50
+# Example of sample 1
+all_results[[1]]$thresholds$fvfm_io
+all_diagnostic_plots$sample_001_io
+
+```
+
+
+```{r}
+sessionInfo()
+```
+

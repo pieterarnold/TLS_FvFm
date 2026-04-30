@@ -75,6 +75,11 @@ Akin to the TDT approach at its core, it fits a linear relationship between temp
 
 ---
 
+## Example
+
+Rmarkdown and html render demonstrates the workflow through applying the functions in a pipeline to example data.
+---
+
 ## Related Resources
 - **Chlorophyll fluorescence methods:** [Maxwell & Johnson 2000](https://doi.org/10.1093/jxb/51.345.659)
 - **TDT framework:** [Rezende et al. 2014](https://doi.org/10.1111/1365-2435.12268)
