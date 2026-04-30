@@ -1,0 +1,152 @@
+---
+title: "TLS_FvFm_methods_Exp5"
+author: "Pieter Arnold, Rosalie Harris, Sabina Aitken"
+date: "`r Sys.Date()`"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load libraries 
+
+```{r}
+
+pacman::p_load(ggplot2, lme4, lmerTest, dplyr, tidyr, plotrix, performance, scales, ggpubr, emmeans, stringr, broom, knitr)
+
+```
+
+## Load data and format
+
+```{r}
+
+Exp5_wide <- read.csv("Data/Exp5_wide.csv")
+Exp5_wide <- unite(Exp5_wide, Temp_Time, c(Temp, Time))
+
+Exp5_long <- read.csv("Data/Exp5_long.csv")
+Exp5_long$Temp_Time <- paste(Exp5_long$Temp, Exp5_long$Time, sep = "_")
+
+sp_names <- c(`Euc` = "Eucalyptus pauciflora",
+              `Lomandra` = "Lomandra longifolia",
+              `Poplar` = "Populus nigra")
+
+summary <- Exp5_long %>%
+  group_by(Temp_Time, Measurement, Species) %>%
+  summarise(
+    sd = sd(FvFm, na.rm = TRUE),
+    se = std.error(FvFm, na.rm=TRUE),
+    fvfm = mean(FvFm, na.rm=TRUE)
+  )
+summary
+
+summary <- summary %>% mutate(Measurement2 = case_when(
+    Measurement == "initial" ~ "-1",
+    Measurement == "30min_post" ~ "0.5",
+    Measurement == "2hour_post" ~ "2",
+    Measurement == "7hour_post" ~ "7",
+    Measurement == "16hour_post" ~ "16",
+    Measurement == "24hour_post" ~ "24"))
+
+summary$Measurement2 <- as.numeric(summary$Measurement2)   
+
+summary$Temp_Time <- factor(summary$Temp_Time, levels = c('30_5', '30_30', '30_120', '40_5','40_30', '40_120', '48_5', '48_30', '48_120'))
+
+```
+
+## Plot time since recovery
+
+```{r}
+
+sp_labels <- c(
+  "Euc" = "italic(Eucalyptus~pauciflora)",
+  "Lomandra" = "italic(Lomandra~longifolia)",
+  "Poplar" = "italic(Populus~nigra)",
+  "Bean" = "italic(Vicia~faba)"
+)
+
+sp_labeller <- function(variable, value) {
+  return(sp_labels[value])
+}
+
+ggplot(data = summary, aes(x = Measurement2, y = fvfm, colour = Temp_Time, fill = Temp_Time)) + 
+  geom_line() + 
+  geom_point() +
+  # geom_ribbon(aes(ymin = fvfm - se, ymax = fvfm + se), alpha = 0.2, linewidth = 0) +
+  facet_grid(~Species, labeller = labeller(Species = as_labeller(sp_labels, label_parsed))) +
+  scale_colour_viridis_d(option = "inferno", end = 0.85) +
+  scale_fill_viridis_d(option = "inferno", end = 0.85) +
+  labs(y = bquote(italic(F)[V]/italic(F)[M]), x = "Time since treatment (h)", 
+       colour = bquote(atop(Temperature~(degree*C),"_"~Duration~(min))),
+       fill = bquote(atop(Temperature~(degree*C),"_"~Duration~(min)))) +
+  theme_bw() +
+  theme(legend.position = "right")
+
+ggsave("Plots/Fig_Exp5.pdf", width = 8, height = 3)
+
+
+```
+
+## Statistical models
+
+```{r}
+
+# Compare 30min post against 24hour post Fv/Fm across species with treatment effects
+
+Exp5 <- Exp5_wide %>%
+  select(AOI, Temp_Time, Cell, Species, Collection, X30min_post, X24hour_post) %>%
+  pivot_longer(
+    cols = c(X30min_post, X24hour_post),
+    names_to = "Time_point",
+    values_to = "FvFm"
+  ) %>%
+  mutate(
+    Time_point = recode(Time_point, 
+                       "X30min_post" = "30min",
+                       "X24hour_post" = "24hour"),
+    Time_point = factor(Time_point, levels = c("30min", "24hour"))
+  )
+
+
+
+mod_exp5 <- lmer(FvFm ~ Species * Temp_Time * Time_point + (1|Cell), data = Exp5)
+anova(mod_exp5)
+
+emm <- emmeans(mod_exp5, pairwise ~ Time_point | Species + Temp_Time)
+summary(emm$contrasts)
+
+contrasts_df <- summary(emm$contrasts) %>%
+  as.data.frame() %>%
+  # Separate Species and Temp_Time from the grouped output
+  mutate(
+    Species = str_extract(Species, "^[^,]+"),
+    Temp_Time = str_extract(Temp_Time, "[^:]+$")
+  ) %>%
+  # Round values
+  mutate(
+    estimate = round(estimate, 3),
+    SE = round(SE, 3),
+    t.ratio = round(t.ratio, 2),
+    p.value = format.pval(p.value, digits = 3, eps = 0.001)
+  ) %>%
+  # Select and rename columns
+  select(Species, Temp_Time, Estimate = estimate, SE, `t-ratio` = t.ratio, `p-value` = p.value) %>%
+  # Add significance stars
+  mutate(
+    Sig = case_when(
+      as.numeric(gsub("<", "", `p-value`)) < 0.001 ~ "***",
+      as.numeric(gsub("<", "", `p-value`)) < 0.01 ~ "**",
+      as.numeric(gsub("<", "", `p-value`)) < 0.05 ~ "*",
+      TRUE ~ ""
+    )
+  )
+
+# View the table
+print(contrasts_df)
+
+```
+
+

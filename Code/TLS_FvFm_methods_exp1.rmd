@@ -1,0 +1,646 @@
+---
+title: "TLS_FvFm_methods_exp1"
+author: "Pieter Arnold"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## Libraries
+
+Load in R packages and functions required for the models to run.
+
+```{r}
+
+pacman::p_load(ggplot2, ggpubr, patchwork, scales, tidyr, dplyr, lmerTest, plotrix, readr, qs2, foreach, doParallel, pbapply)
+
+source("Code/TLS_functions.R")
+
+```
+
+## Load data
+
+Import the data to be extracted. Calculate the proportional Fv/Fm based on the time periods of measurements.
+Typically, this is initial, 2h post-heat, and 16-24h post-heat. 
+Rename columns to a consistent naming convention for the pipeline to run as intended.
+At minimum you'll need: Temp, Time, final_fvfm, initial_fvfm
+
+
+```{r}
+
+# Add filepath
+Exp1_wide <- read.csv("Data/Exp1_wide.csv", stringsAsFactors = TRUE)
+
+str(Exp1_wide)
+
+levels(Exp1_wide$Species) <- c("Vicia faba", 
+                               "Eucalyptus pauciflora", 
+                               "Lomandra longifolia", 
+                               "Populus nigra")
+Exp1_wide$Species <- factor(Exp1_wide$Species, levels = c("Eucalyptus pauciflora", 
+                                                          "Lomandra longifolia", 
+                                                          "Populus nigra", 
+                                                          "Vicia faba"))
+
+dat <- Exp1_wide
+rm(Exp1_wide)
+
+# initial (before heat)      [i]
+# overnight (24h after heat) [o]
+
+# Calculate Fv/Fm as proportion (initial - overnight)
+dat$fvfm_prop_io <- dat$final/dat$initial
+dat$fvfm_prop_io <- ifelse(dat$final/dat$initial=="NaN", 0, dat$final/dat$initial) 
+dat$fvfm_prop_io <- ifelse(dat$fvfm_prop_io > 1, 1, dat$fvfm_prop_io) 
+
+# dat <- dat %>% rename(Time = Duration)
+dat <- dat %>% rename(final_fvfm = final)
+dat <- dat %>% rename(initial_fvfm = initial)
+dat$unique_sample <- paste0(dat$AOI)
+dat$unique_sample <- as.integer(as.factor(dat$unique_sample))
+dat$Species_sample <- paste0(dat$Species, "_", dat$unique_sample)
+
+nlevels(as.factor(unique(dat$unique_sample)))
+
+```
+
+
+## Clean data
+
+Double check the number of samples, ensuring that most of them have representation across the treatments. Exclude samples that showed damage under benign conditions (clearly unhealthy or physically damaged, unrelated to the heat treatment). Option to manually remove samples that are known to be poor quality.
+
+
+```{r}
+
+# Number of unique samples 
+nsamp <- length(unique(dat$unique_sample))
+print(nsamp)
+
+# Check the data depth: length_sample would ideally be > 20
+length_sample <- matrix(NA, nsamp, 1)
+for (i in 1:nsamp) {
+  length_sample[i] <- length(which(dat$unique_sample==i))
+}
+# Check which sample(s) has poor replication
+which(length_sample < 20) # integer(0) indicates all are ok
+
+dat_clean <- dat
+dim(dat_clean)
+head(dat_clean)
+
+# Create directory for outputs if it doesn't exist
+if(!dir.exists("Output")) {
+  dir.create("Output")
+}
+
+# Save cleaned data
+write.csv(dat_clean, "Output/Exp1_dat_clean.csv")
+
+```
+
+
+## Data summary
+
+Summarise and plot the raw Fv/Fm data of the cleaned dataset overall. This should give insight into ubiquitously problematic treatments from the heat assays. If used, The simulated anchor is included in the plotting.
+
+```{r}
+
+
+fvfm_prop_summary <- dat_clean %>%
+  group_by(Temp, Time) %>%
+  summarise(
+    meanFvFm = mean(fvfm_prop_io, na.rm = TRUE),
+    sd = sd(fvfm_prop_io, na.rm = TRUE),
+    se = std.error(fvfm_prop_io, na.rm = TRUE))
+fvfm_prop_summary$Temp <- as.factor(fvfm_prop_summary$Temp)
+fvfm_prop_summary
+
+
+ggplot(data = fvfm_prop_summary, aes(x = log10(Time), y = meanFvFm, colour = Temp)) +
+  geom_point(position = position_jitter(0.00), alpha = 0.5) +
+  geom_smooth(method = "lm", formula = y ~ x, se = FALSE, fullrange = TRUE) +
+  scale_x_continuous(breaks = c(log10(1), log10(5), log10(15), 
+                                log10(30), log10(60), log10(120), log10(240)),
+                     labels = c("1", "5", "15", "30", "60", "120", "240")) +
+  scale_y_continuous(limits = c(-0.03,1)) +
+  labs(y = bquote(Proportional~italic(F)[V]/italic(F)[M]), x = bquote(Time~(min)), colour = "Temperature") +
+  scale_colour_viridis_d(option = "inferno", end = 0.85) +
+  theme_classic()
+
+fvfm_summary <- dat_clean %>%
+  group_by(Temp, Time) %>%
+  summarise(
+    meanFvFm = mean(final_fvfm, na.rm = TRUE),
+    sd = sd(final_fvfm, na.rm = TRUE),
+    se = std.error(final_fvfm, na.rm = TRUE))
+fvfm_summary$Temp <- as.factor(fvfm_summary$Temp)
+fvfm_summary
+
+ggplot(data = fvfm_summary, aes(x = log10(Time), y = meanFvFm, colour = Temp)) +
+  geom_point(position = position_jitter(0.00), alpha = 0.5) +
+  geom_smooth(method = "lm", formula = y ~ x, se = FALSE, fullrange = TRUE) +
+  scale_x_continuous(breaks = c(log10(1), log10(5), log10(15), 
+                                log10(30), log10(60), log10(120), log10(240)),
+                     labels = c("1", "5", "15", "30", "60", "120", "240")) +
+  scale_y_continuous(limits = c(-0.03,0.8)) +
+  labs(y = bquote(italic(F)[V]/italic(F)[M]), x = bquote(Time~(min)), colour = "Temperature") +
+  scale_colour_viridis_d(option = "inferno", end = 0.85) +
+  theme_classic()
+
+```
+
+## User config
+
+User defined parameters for fitting the TLS models
+`rep` = number of bootstrap iterations, will increase model fitting time proportionally
+`response_vars` = a list of response variables to be calculated. fvfm_io is initial to overnight and is the minimum used. Customisable if additional measurement time points are included.
+`thresholds` = a list of thresholds to include in the analysis. T50 is typical (50% decline in Fv/Fm), but also the a point of damage initiation (e.g. T5, T10, T15, 'Tcrit') and a point of substantial damage (e.g. T90, T95). Both the threshold name and value from 0 to 1 need to be defined and matched.
+
+`response_vars_absolute` = a list of response variables to be calculated. fvfm_absolute is the final Fv/Fm value (absolute raw data). Customisable for different thresholds if additional measurement time points are included.
+`thresholds` = a list of thresholds for absolute values to include in the analysis. T0.3 is typical (temperature when Fv/Fm = 0.3), but others can be added between the bounds of 0 and ~0.8.
+
+```{r}
+
+# User-defined parameters
+# Configuration
+config <- list(
+  rep = 1000, # Bootstrap replications,  # CHANGE AS REQUIRED
+  uniquesamples = length(unique(dat$unique_sample)),
+  time_levels = c(5,15,30,60,120),  # CHANGE AS REQUIRED
+  resample = TRUE, # Option for bootstrap or original data (recommend using bootstrapping)
+  
+  # Define which response variables to analyse  # CHANGE AS REQUIRED
+  response_vars <- list(
+    fvfm_io = list(
+      name = "fvfm_prop_io",
+      description = "Initial to 24h recovery", 
+      thresholds = list(
+        T90 = 0.1, # 90% decline
+        T50 = 0.5, # 50% decline
+        T10 = 0.9  # 10% decline, may not always work if there aren't a few control treatments (low temp, short time)
+      )
+    )
+  ), 
+  
+  response_vars_absolute <- list(
+    fvfm_absolute = list(
+      name = "final_fvfm",  # Use the raw Fv/Fm column instead of proportional
+      description = "Absolute Fv/Fm values",
+      thresholds = list(
+        T0.3 = 0.3    # Temperature where Fv/Fm = 0.3
+      )
+    )
+  )
+)
+
+config$response_vars <- c(response_vars, response_vars_absolute)
+
+config
+
+```
+
+
+## Extract data
+
+This applies many of the functions to extract the threshold temperature values under each treatment and then calculate TLS metrics from those fits. Also generates plots for diagnostics. Stores results in `all_results` as a list that is compiled in the next steps. Progress is indicated.
+
+```{r}
+
+# Initialise output lists
+all_results <- list()
+all_diagnostic_plots <- list()
+
+for(k in 1:config$uniquesamples) {
+  tryCatch({
+    cat(sprintf("\rProcessing sample %d/%d", k, config$uniquesamples))
+    cat("\n")  
+    
+    # Prepare data
+    sp <- dat_clean %>%
+      filter(unique_sample == k) %>%
+      mutate(logTime = log10(Time))
+    
+    if(nrow(sp) < 10) {
+      cat(sprintf(" - Skipped (insufficient data)\n"))
+      next
+    }
+    
+    # Generate prediction grid
+    pred_grid <- generate_pred_grid(sp)
+    
+    if(isTRUE(config$resample)) {
+      # Bootstrap predictions for all response variables
+      cat("Running with resampling (bootstrap)\n")
+      predictions <- bootstrap_predictions(sp, pred_grid, config$response_vars, config$rep, 
+                                           resample = TRUE, progress = TRUE, n_cores = parallel::detectCores())
+    } else {
+      cat("Running without resampling (original)\n")
+      predictions <- bootstrap_predictions(sp, pred_grid, config$response_vars, config$rep, 
+                                           resample = FALSE, progress = FALSE)
+    }
+    
+    # Calculate temperature thresholds for all responses
+    threshold_results <- calculate_all_thresholds(
+      predictions, pred_grid, config$response_vars, config$rep
+    )
+    
+    # Calculate TLS metrics for all responses
+    tls_metrics <- list()
+    for(resp_var in names(config$response_vars)) {
+      tls_metrics[[resp_var]] <- calculate_tls_metrics(threshold_results[[resp_var]], verbose = TRUE, 
+                                                       min_r_squared = 0.1, 
+                                                       temp_range = c(15,80),
+                                                       z_range = c(-30,5),
+                                                       min_temp_span = 0.1)
+      
+      # Add metadata
+      for(thresh_name in names(tls_metrics[[resp_var]])) {
+        if(!is.null(tls_metrics[[resp_var]][[thresh_name]])) {
+          tls_metrics[[resp_var]][[thresh_name]]$unique_sample <- k
+          tls_metrics[[resp_var]][[thresh_name]]$response_type <- resp_var
+        }
+      }
+    }
+    
+    # Generate diagnostic plots
+    plots <- generate_diagnostic_plots(
+      sp, predictions, pred_grid, 
+      threshold_results, tls_metrics, 
+      k, config$response_vars
+    )
+    
+    # Save plots for each response type
+    plot_combined_list <- list()
+    
+    for(resp_var in names(plots)) {
+      resp_name <- gsub("fvfm_", "", resp_var)  # Clean name for filename
+      
+      # Combine plots for this response
+      plot_combined_list[[resp_var]] <- ggarrange(
+        plotlist = plots[[resp_var]], 
+        nrow = 3, ncol = 2, 
+        align = "h", labels = "AUTO"
+      )
+      
+      # Save plots
+      for(resp_var in names(plot_combined_list)) {
+        resp_name <- gsub("fvfm_", "", resp_var)
+        plot_name <- sprintf("sample_%03d_%s", k, resp_name)
+        all_diagnostic_plots[[plot_name]] <- plot_combined_list[[resp_var]]
+      }
+    }
+    
+    # Store results
+    all_results[[k]] <- list(
+      thresholds = threshold_results,
+      tls_metrics = tls_metrics,
+      predictions = predictions
+    )
+    
+  }, error = function(e) {
+    cat(sprintf("\nERROR in sample %d: %s\n", k, conditionMessage(e)))
+  })
+}
+
+pdf("Output/Exp1_all_samples_diagnostics.pdf", width = 8, height = 12)
+for(plot in all_diagnostic_plots) {
+  print(plot)
+}
+dev.off()
+rm(plots)
+
+```
+
+## Save results
+
+```{r, eval=FALSE}
+
+qs_save(all_results, "Output/Exp1_results_data.qs2", nthreads = parallel::detectCores())  # Small file
+# qs_save(all_diagnostic_plots, "Output/results_plots.qs2", nthreads = parallel::detectCores())   # Large file
+
+```
+
+
+```{r, eval=FALSE}
+
+# Load output list with plots as a .rds file (may read a large file if rep is large)
+# all_results <- qs_read("Output/Exp1_results_data.qs2")
+# all_diagnostic_plots <- qs_read("Output/Exp1_results_plots.qs2")
+
+```
+
+
+## Summarize results
+
+```{r}
+
+# Extract all results for each response type
+results_summary <- list()
+
+for(resp_var in names(config$response_vars)) {
+  results_summary[[resp_var]] <- list()
+  
+  # Get thresholds
+  for(thresh in names(config$response_vars[[resp_var]]$thresholds)) {
+    results_summary[[resp_var]]$thresholds[[thresh]] <- 
+      compile_results_by_response(all_results, resp_var, thresh)
+    
+    results_summary[[resp_var]]$tls[[thresh]] <- 
+      compile_tls_by_response(all_results, resp_var, thresh)
+  }
+}
+
+```
+
+## Save results
+
+```{r}
+
+for(resp in names(results_summary)) {
+  for(thresh in names(results_summary[[resp]]$thresholds)) {
+    # Thresholds
+    write.csv(
+      results_summary[[resp]]$thresholds[[thresh]], 
+      sprintf("Output/Exp1_results_%s_thr_%s.csv", resp, tolower(thresh)),
+      row.names = FALSE
+    )
+    
+    # TLS metrics
+    write.csv(
+      results_summary[[resp]]$tls[[thresh]], 
+      sprintf("Output/Exp1_results_%s_tls_%s.csv", resp, tolower(thresh)),
+      row.names = FALSE
+    )
+  }
+}
+
+```
+
+## Compile final results
+
+```{r}
+
+# Flatten TLS metrics
+df_tls <- flatten_results_summary(results_summary)
+
+# View the flattened data
+tail(df_tls)
+
+# Get summary statistics
+summary_stats <- summarize_results(df_tls)
+print(summary_stats)
+
+# Compare valid vs invalid fits
+validity <- compare_valid_invalid(df_tls)
+print(validity)
+
+# Flatten threshold data (T[n] across time)
+df_thresholds <- flatten_threshold_data(results_summary)
+head(df_thresholds)
+
+# Export to CSV
+write_csv(df_tls, "Output/Exp1_tls_metrics_flattened.csv")
+write_csv(df_thresholds, "Output/Exp1_threshold_data_flattened.csv")
+
+```
+
+## Merge with metadata
+
+```{r}
+
+df_tls <- read.csv("Output/Exp1_tls_metrics_flattened.csv")
+df_thresholds <- read.csv("Output/Exp1_threshold_data_flattened.csv")
+
+str(df_tls)
+str(dat)
+
+# Get unique metadata per unique_sample (remove duplicate rows and irrelevant columns)
+metadata <- dat %>%
+  select(-X, -Temp, -Cell, -AOI) %>%
+  distinct(unique_sample, .keep_all = TRUE)
+
+# Create metadata keeping the Time variable
+metadata_with_time <- dat %>%
+  select(-X, -Temp, -Cell, -AOI) %>%
+  distinct(unique_sample, Time, .keep_all = TRUE)
+
+# Merge with df_tls
+df_tls_merged <- df_tls %>%
+  left_join(metadata, by = "unique_sample")
+
+# Merge with df_thresholds
+df_thresholds_merged <- df_thresholds %>%
+  left_join(metadata_with_time, by = c("unique_sample", "Time"))
+
+# View the result
+head(df_tls_merged)
+str(df_tls_merged)
+
+head(df_thresholds_merged)
+str(df_thresholds_merged)
+
+df_thresholds_merged <- df_thresholds_merged %>%
+  mutate(threshold = factor(threshold, levels = c("T10", "T0.3", "T50", "T90")))
+
+df_tls_merged <- df_tls_merged %>%
+  mutate(threshold = factor(threshold, levels = c("T10", "T0.3", "T50", "T90")))
+
+```
+
+
+## Fit statistical models
+
+```{r}
+
+# Model response of T90 io to recovery, duration, and species
+df_t90_e1 <- df_thresholds_merged %>% filter(response_type=="fvfm_io" & threshold == "T90")
+mod_t90_e1 <- lm(temperature ~ Recovery * Time * Species, data = df_t90_e1)
+anova(mod_t90_e1)
+
+# Model response of T50 io to recovery, duration, and species
+df_t50_e1 <- df_thresholds_merged %>% filter(response_type=="fvfm_io" & threshold == "T50")
+mod_t50_e1 <- lm(temperature ~ Recovery * Time * Species, data = df_t50_e1)
+anova(mod_t50_e1)
+
+# Model response of T10 io to recovery, duration, and species
+df_t10_e1 <- df_thresholds_merged %>% filter(response_type=="fvfm_io" & threshold == "T10")
+mod_t10_e1 <- lm(temperature ~ Recovery * Time * Species, data = df_t10_e1)
+anova(mod_t10_e1)
+
+# Effect of dark vs light * species on CTmax
+df_tls_e1 <- df_tls_merged %>% filter(response_type=="fvfm_io")
+mod_ctmax_e1 <- lm(ctmax_1h ~ Recovery * threshold + Species, data = df_tls_e1)
+anova(mod_ctmax_e1)
+
+mod_ctmax1m_e1 <- lm(ctmax_1m ~ Recovery * threshold + Species, data = df_tls_e1)
+anova(mod_ctmax1m_e1)
+
+mod_z_e1 <- lm(z_1h ~ Recovery * threshold + Species, data = df_tls_e1)
+anova(mod_z_e1)
+
+```
+
+## Plot Exp 1 results
+
+```{r}
+
+# Create directory for output if it doesn't exist
+if(!dir.exists("Plots")) {
+  dir.create("Plots")
+}
+
+pred_data_individual <- df_tls_merged %>%
+  filter((response_type == "fvfm_io" | response_type == "fvfm_absolute") & valid_fit == TRUE) %>%
+  select(-Time) %>% 
+  rowwise() %>%
+  mutate(
+    pred_df = list({
+      time_seq <- seq(1, 120, length.out = 100)
+      temp_pred <- ctmax_1m + (z_1m * log10(time_seq))
+      data.frame(Time = time_seq, temperature_pred = temp_pred)
+    })
+  ) %>%
+  unnest(pred_df)
+
+
+# Then average predictions across samples
+pred_data <- pred_data_individual %>%
+  group_by(Species, Recovery, response_type, threshold, Time) %>%
+  summarise(
+    temperature_pred = mean(temperature_pred, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+sp_labels <- c(
+  "Eucalyptus pauciflora" = "italic(Eucalyptus~pauciflora)",
+  "Lomandra longifolia" = "italic(Lomandra~longifolia)",
+  "Populus nigra" = "italic(Populus~nigra)",
+  "Vicia faba" = "italic(Vicia~faba)"
+)
+
+sp_labeller <- function(variable, value) {
+  return(sp_labels[value])
+}
+
+
+# Plot
+ggplot(df_thresholds_merged %>%
+         filter(response_type=="fvfm_io" | response_type=="fvfm_absolute"), 
+       aes(x = Time, y = temperature)) +
+  facet_grid(
+    Species ~ Recovery,
+    labeller = labeller(Species = as_labeller(sp_labels, label_parsed))
+  ) +
+  stat_summary(aes(colour = Recovery, fill = Recovery, shape = threshold),
+               fun.data = "mean_se") +
+  geom_line(data = pred_data, 
+            aes(x = Time, y = temperature_pred, colour = Recovery, group = threshold),
+            linewidth = 1, alpha = 0.5) +
+  scale_shape_discrete(name = "Threshold", labels = c(bquote(italic(T)[10]),
+                                                      bquote(italic(T)[0.3]),
+                                                      bquote(italic(T)[50]),
+                                                      bquote(italic(T)[90]))) +
+  scale_colour_viridis_d(option = "inferno", end = 0.8, begin = 0.1, direction = 1,
+                         labels = c("Dark", "Light"), name = "Recovery\ncondition") +
+  scale_fill_viridis_d(option = "inferno", end = 0.8, begin = 0.1, direction = 1,
+                         labels = c("Dark", "Light"), name = "Recovery\ncondition") +
+  expand_limits(x = c(log10(1), log10(120)), y = c(30, 65)) +
+  scale_y_continuous(limits = c(30, 65), breaks = seq(30, 65, by = 10)) +
+  scale_x_log10(breaks = c(1,5,15,30,60,120),
+                labels = c("1", "5", "15", "30", "60", "120")) +
+  labs(x = "Exposure duration (min)", y = bquote(Heat~tolerance~(degree*C))) +
+  theme_bw() + 
+  theme(legend.position = "bottom")
+
+ggsave("Plots/Fig_Exp1_1.pdf", width = 6, height = 8)
+
+# TLS metrics plot and summary stats
+
+temp_summary_by_threshold <- df_thresholds_merged %>%
+  group_by(Species, Recovery, threshold) %>%
+  summarise(
+    n_obs = n(),
+    min_temp = min(temperature, na.rm = TRUE),
+    mean_temp = mean(temperature, na.rm = TRUE),
+    max_temp = max(temperature, na.rm = TRUE),
+    sd_temp = sd(temperature, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(threshold, Species, Recovery)
+
+print(temp_summary_by_threshold, n = 32)
+
+
+temp_summary_by_tls <- df_tls_merged %>%
+  group_by(Species, Recovery, threshold) %>%
+  summarise(
+    n_obs = n(),
+    mean_ctmax_1h = mean(ctmax_1h, na.rm = TRUE),
+    sd_ctmax_1h = sd(ctmax_1h, na.rm = TRUE),
+    mean_ctmax_1m = mean(ctmax_1m, na.rm = TRUE),
+    sd_ctmax_1m = sd(ctmax_1m, na.rm = TRUE),
+    mean_z_1h = mean(z_1h, na.rm = TRUE),
+    sd_z_1h = sd(z_1h, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  pivot_longer(
+    cols = starts_with("mean_"),
+    names_to = "metric",
+    values_to = "mean_value",
+    names_prefix = "mean_"
+  ) %>%
+  # Add corresponding SD values
+  mutate(
+    sd_value = case_when(
+      metric == "ctmax_1h" ~ sd_ctmax_1h,
+      metric == "ctmax_1m" ~ sd_ctmax_1m,
+      metric == "z_1h" ~ sd_z_1h
+    )
+  ) %>%
+  select(-sd_ctmax_1h, -sd_ctmax_1m, -sd_z_1h) %>%
+  arrange(threshold, Species, Recovery, metric)
+
+
+metric_labels <- c(
+  "ctmax_1h" = "italic(CT)[max_1h]",
+  "ctmax_1m" = "italic(CT)[max_1m]",
+  "z_1h" = "italic(z)"
+)
+
+threshold_labels <- c(
+  "T10" = "italic(T)[10]",
+  "T0.3" = "italic(T)[0.3]",
+  "T50" = "italic(T)[50]",
+  "T90" = "italic(T)[90]"
+)
+
+# Custom labeller function
+threshold_labeller <- function(variable, value) {
+  return(threshold_labels[value])
+}
+
+metric_labeller <- function(variable, value) {
+  return(metric_labels[value])
+}
+
+ggplot(temp_summary_by_tls, 
+       aes(x = Recovery, y = mean_value, color = Species, fill = Species)) +
+  facet_grid(
+    metric ~ threshold, scales = "free_y",
+    labeller = labeller(threshold = as_labeller(threshold_labels, label_parsed),
+                        metric = as_labeller(metric_labels, label_parsed))
+  ) +
+  geom_pointrange(aes(ymin = mean_value - sd_value, ymax = mean_value + sd_value), position = position_dodge(0.3)) +
+  scale_colour_viridis_d(option = "mako", end = 0.8, begin = 0.1, direction = 1,
+                         name = "Species") +
+  labs(x = bquote(Recovery~condition), 
+       y = bquote(Heat~tolerance~(degree*C))) +
+  theme_bw() + theme(legend.position = "bottom", legend.text = element_text(face = "italic"))
+
+ggsave("Plots/Fig_Exp1_2.pdf", width = 6, height = 5)
+
+```

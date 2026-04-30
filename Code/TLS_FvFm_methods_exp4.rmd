@@ -1,0 +1,218 @@
+---
+title: "TLS_FvFm_methods_exp4"
+author: "Pieter Arnold, Rosalie Harris, Sabina Aitken"
+date: "`r Sys.Date()`"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## Load libraries 
+
+```{r}
+
+pacman::p_load(ggplot2, lme4, lmerTest, dplyr, tidyr, plotrix, performance, scales, ggpubr, emmeans, stringr, broom, knitr)
+
+```
+
+## Load data and format
+
+```{r}
+
+Exp4_wide <- read.csv("Data/Exp4_wide.csv")
+Exp4_wide <- unite(Exp4_wide, Temp_Time, c(Temp, Time))
+
+
+combined_Exp4 <- bind_rows(
+  Exp4_wide %>%
+    group_by(Species, Temp_Time, Collection) %>%
+    summarise(
+      se = std.error(Initial, na.rm = TRUE),
+      value = mean(Initial, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(Measurement = "Initial"),
+  
+  Exp4_wide %>%
+    group_by(Species, Temp_Time, Collection) %>%
+    summarise(
+      se = std.error(X16hour_post, na.rm = TRUE),
+      value = mean(X16hour_post, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(Measurement = "Final")
+) %>%
+  mutate(
+    Collection = as.factor(Collection),
+    Temp_Time = factor(Temp_Time, levels = c('30_5', '30_30', '30_120', 
+                                              '40_5', '40_30', '40_120', 
+                                              '48_5', '48_30', '48_120')),
+    Measurement = factor(Measurement, levels = c("Initial", "Final"))
+  )
+
+sp_labels <- c(
+  "Euc" = "italic(Eucalyptus~pauciflora)",
+  "Lomandra" = "italic(Lomandra~longifolia)",
+  "Poplar" = "italic(Populus~nigra)",
+  "Bean" = "italic(Vicia~faba)"
+)
+
+sp_labeller <- function(variable, value) {
+  return(sp_labels[value])
+}
+
+# Create combined plot
+Exp4_plot <- ggplot(combined_Exp4, aes(x = Temp_Time, y = value, 
+                                        color = Collection, shape = Measurement)) +
+  geom_pointrange(aes(ymin = value - se, ymax = value + se), 
+                  size = 0.5, position = position_dodge(width = 0.4)) +
+  facet_grid(~Species, labeller = labeller(Species = as_labeller(sp_labels, label_parsed))) +
+  scale_color_manual(
+    values = c("0" = "#1B7837", "3" = "#A6DBA0", "12" = "#C2A5CF", "24" = "#762A83"),
+    name = "Hours since\ncollection"
+  ) +
+  scale_shape_manual(values = c("Initial" = 16, "Final" = 17)) +
+  scale_y_continuous(breaks = seq(0, 0.8, 0.2), limits = c(0, 0.9)) +
+  labs(y = bquote(italic(F)[V]/italic(F)[M]), 
+       x = bquote(Temperature~(degree*C)~"_"~Duration~(min))) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
+    legend.position = "bottom"
+  )
+
+Exp4_plot
+
+ggsave("Plots/Fig_Exp4_1.pdf", width = 6, height = 3.5)
+
+```
+
+
+
+```{r}
+
+# Modify the summary to separate temp and time
+initial_summary <- Exp4_wide %>%
+  # Extract temperature and time from Temp_Time
+  separate(Temp_Time, into = c("Temp", "Time"), sep = "_", remove = FALSE) %>%
+  group_by(Species, Temp, Time, Collection) %>%
+  summarise(
+    sd = sd(Initial, na.rm = TRUE),
+    se = std.error(Initial, na.rm = TRUE),
+    initialmean = mean(Initial, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(Species = case_when(
+    Species == "Euc" ~ "Eucalyptus pauciflora",
+    Species == "Lomandra" ~ "Lomandra longifolia",
+    Species == "Poplar" ~ "Populus nigra")) %>%
+  mutate(
+    Collection = as.factor(Collection),
+    # Order time levels
+    Time = factor(Time, levels = c("5", "30", "120")),
+    # Order temp levels
+    Temp = factor(Temp, levels = c("30", "40", "48"))
+  )
+
+
+# Create the plot
+initial_Exp4_plot <- ggplot(data = initial_summary, 
+                            aes(x = Collection, y = initialmean, 
+                                colour = Species, 
+                                shape = Time,
+                                group = interaction(Species, Time))) +
+  geom_pointrange(aes(ymin = initialmean - se, ymax = initialmean + se), 
+                  size = 0.8,
+                  position = position_dodge(width = 0.5)) +
+  geom_line(position = position_dodge(width = 0.5)) +
+  facet_wrap(~Temp, labeller = labeller(Temp = c("30" = "30°C", 
+                                                  "40" = "40°C", 
+                                                  "48" = "48°C"))) +
+  scale_colour_viridis_d(option = "mako", end = 0.55, begin = 0.1, 
+                        direction = 1, name = "Species",
+                        labels = function(x) parse(text = paste0("italic('", x, "')"))) +
+  scale_shape_manual(values = c("5" = 16, "30" = 17, "120" = 15),
+                     labels = c("5 min", "30 min", "120 min"),
+                     name = "Duration") +
+  labs(y = bquote(Initial~italic(F)[V]/italic(F)[M]), 
+       x = "Hours since collection") +
+  expand_limits(y = c(0.0, 0.9)) + 
+  scale_y_continuous(breaks = c(0.0, 0.2, 0.4, 0.6, 0.8)) +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+# initial_Exp4_plot
+
+
+# Modify the summary to separate temp and time
+final_summary <- Exp4_wide %>%
+  # Extract temperature and time from Temp_Time
+  separate(Temp_Time, into = c("Temp", "Time"), sep = "_", remove = FALSE) %>%
+  group_by(Species, Temp, Time, Collection) %>%
+  summarise(
+    sd = sd(X16hour_post, na.rm = TRUE),
+    se = std.error(X16hour_post, na.rm = TRUE),
+    finalmean = mean(X16hour_post, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(Species = case_when(
+    Species == "Euc" ~ "Eucalyptus pauciflora",
+    Species == "Lomandra" ~ "Lomandra longifolia",
+    Species == "Poplar" ~ "Populus nigra")) %>%
+  mutate(
+    Collection = as.factor(Collection),
+    # Order time levels
+    Time = factor(Time, levels = c("5", "30", "120")),
+    # Order temp levels
+    Temp = factor(Temp, levels = c("30", "40", "48"))
+  )
+
+
+# Create the plot
+final_Exp4_plot <- ggplot(data = final_summary, 
+                            aes(x = Collection, y = finalmean, 
+                                colour = Species, 
+                                shape = Time,
+                                group = interaction(Species, Time))) +
+  geom_pointrange(aes(ymin = finalmean - se, ymax = finalmean + se), 
+                  size = 0.8,
+                  position = position_dodge(width = 0.5)) +
+  geom_line(position = position_dodge(width = 0.5)) +
+  facet_wrap(~Temp, labeller = labeller(Temp = c("30" = "30°C", 
+                                                  "40" = "40°C", 
+                                                  "48" = "48°C"))) +
+  scale_colour_viridis_d(option = "mako", end = 0.55, begin = 0.1, 
+                        direction = 1, 
+                        name = "Species",
+                        labels = function(x) parse(text = paste0("italic('", x, "')"))) +
+  scale_shape_manual(values = c("5" = 16, "30" = 17, "120" = 15),
+                     labels = c("5 min", "30 min", "120 min"),
+                     name = "Duration") +
+  labs(y = bquote(Final~italic(F)[V]/italic(F)[M]), 
+       x = "Hours since collection") +
+  expand_limits(y = c(0.0, 0.9)) + 
+  scale_y_continuous(breaks = c(0.0, 0.2, 0.4, 0.6, 0.8)) +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+
+ggarrange(initial_Exp4_plot, final_Exp4_plot, nrow = 2, common.legend = TRUE, legend = "bottom")
+
+ggsave("Plots/Fig_Exp4_2.pdf", width = 8, height = 6)
+
+```
+
+## Statistical model
+
+```{r}
+
+mod_Exp4 <- lm(value ~ Collection * Measurement * Temp_Time + Species, data = combined_Exp4)
+anova(mod_Exp4)
+
+```
